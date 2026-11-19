@@ -6,7 +6,9 @@ package githubreceiver
 import (
 	"testing"
 
+	"github.com/google/go-github/v92/github"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
@@ -123,6 +125,98 @@ func TestReplaceAPIURL(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestPreviousAttemptHTMLURL(t *testing.T) {
+	const githubHTML = "https://github.com/open-telemetry/open-telemetry-otel-collector/actions/runs/14460881260"
+	const githubAPI = "https://api.github.com/repos/open-telemetry/open-telemetry-otel-collector/actions/runs/14460881260/attempts/12"
+	const enterpriseHTML = "https://github.acme.corp/platform/payments-service/actions/runs/998877"
+	const enterpriseAPI = "https://github.acme.corp/api/v3/repos/platform/payments-service/actions/runs/998877/attempts/2"
+
+	tests := []struct {
+		name     string
+		htmlURL  string
+		attempt  int
+		apiURL   string
+		expected string
+	}{
+		{
+			name:     "github.com uses html_url and the previous attempt number",
+			htmlURL:  githubHTML,
+			attempt:  13,
+			apiURL:   githubAPI,
+			expected: githubHTML + "/attempts/12",
+		},
+		{
+			name:     "enterprise server uses the html_url host instead of the api path",
+			htmlURL:  enterpriseHTML,
+			attempt:  3,
+			apiURL:   enterpriseAPI,
+			expected: enterpriseHTML + "/attempts/2",
+		},
+		{
+			name:     "trims a trailing slash on html_url",
+			htmlURL:  enterpriseHTML + "/",
+			attempt:  3,
+			apiURL:   enterpriseAPI,
+			expected: enterpriseHTML + "/attempts/2",
+		},
+		{
+			name:     "falls back to github.com api rewrite when html_url is missing",
+			htmlURL:  "",
+			attempt:  13,
+			apiURL:   githubAPI,
+			expected: "https://github.com/open-telemetry/open-telemetry-otel-collector/actions/runs/14460881260/attempts/12",
+		},
+		{
+			name:     "first attempt has no previous url",
+			htmlURL:  githubHTML,
+			attempt:  1,
+			apiURL:   "",
+			expected: "",
+		},
+		{
+			name:     "missing previous attempt api url is omitted",
+			htmlURL:  enterpriseHTML,
+			attempt:  3,
+			apiURL:   "",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, previousAttemptHTMLURL(tt.htmlURL, tt.attempt, tt.apiURL))
+		})
+	}
+}
+
+func TestGetWorkflowRunAttrsPreviousAttemptEnterprise(t *testing.T) {
+	htmlURL := "https://github.acme.corp/platform/payments-service/actions/runs/998877"
+	previousAPI := "https://github.acme.corp/api/v3/repos/platform/payments-service/actions/runs/998877/attempts/2"
+	repoName := "payments-service"
+	event := &github.WorkflowRunEvent{
+		WorkflowRun: &github.WorkflowRun{
+			Name:               github.Ptr("build-and-test"),
+			HeadBranch:         github.Ptr("main"),
+			HeadSHA:            github.Ptr("abc123"),
+			ID:                 github.Ptr(int64(998877)),
+			Conclusion:         github.Ptr("failure"),
+			HTMLURL:            &htmlURL,
+			RunAttempt:         github.Ptr(3),
+			PreviousAttemptURL: &previousAPI,
+		},
+		Repo:   &github.Repository{Name: &repoName},
+		Sender: &github.User{Login: github.Ptr("octocat")},
+	}
+
+	gtr := &githubTracesReceiver{cfg: &Config{}}
+	resource := pcommon.NewResource()
+	require.NoError(t, gtr.getWorkflowRunAttrs(resource, event))
+
+	got, ok := resource.Attributes().Get(AttributeCICDPipelinePreviousAttemptURLFull)
+	require.True(t, ok)
+	assert.Equal(t, htmlURL+"/attempts/2", got.Str())
 }
 
 func TestAddCustomPropertiesToAttrs(t *testing.T) {
