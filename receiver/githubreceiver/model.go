@@ -6,6 +6,7 @@ package githubreceiver // import "github.com/open-telemetry/opentelemetry-collec
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -144,9 +145,12 @@ func (gtr *githubTracesReceiver) getWorkflowRunAttrs(resource pcommon.Resource, 
 		attrs.PutStr(AttributeCICDPipelineRunStatus, status)
 	}
 
-	if e.GetWorkflowRun().GetPreviousAttemptURL() != "" {
-		htmlURL := replaceAPIURL(e.GetWorkflowRun().GetPreviousAttemptURL())
-		attrs.PutStr(AttributeCICDPipelinePreviousAttemptURLFull, htmlURL)
+	if previousAttemptURL := previousAttemptHTMLURL(
+		e.GetWorkflowRun().GetHTMLURL(),
+		e.GetWorkflowRun().GetRunAttempt(),
+		e.GetWorkflowRun().GetPreviousAttemptURL(),
+	); previousAttemptURL != "" {
+		attrs.PutStr(AttributeCICDPipelinePreviousAttemptURLFull, previousAttemptURL)
 	}
 
 	// Determine if there are any referenced (shared) workflows listed in the
@@ -332,9 +336,25 @@ func formatString(input string) string {
 	return strings.ToLower(strings.ReplaceAll(input, "_", "-"))
 }
 
-// replaceAPIURL replaces a GitHub API URL with the HTML URL version.
-func replaceAPIURL(apiURL string) (htmlURL string) {
-	// TODO: Support enterpise server configuration with custom domain.
+// previousAttemptHTMLURL returns a browser URL for the previous workflow run attempt.
+// GitHub's previous_attempt_url is an API URL (api.github.com on github.com, and
+// <host>/api/v3 on GitHub Enterprise Server). The workflow run html_url is already
+// the browser URL for the current attempt on either host, so the previous attempt
+// page is that URL plus /attempts/<run_attempt-1>.
+// When html_url is missing, github.com API URLs are still rewritten.
+func previousAttemptHTMLURL(htmlURL string, runAttempt int, previousAttemptAPIURL string) string {
+	if previousAttemptAPIURL == "" {
+		return ""
+	}
+	if runAttempt > 1 && htmlURL != "" {
+		return strings.TrimRight(htmlURL, "/") + "/attempts/" + strconv.Itoa(runAttempt-1)
+	}
+	return replaceAPIURL(previousAttemptAPIURL)
+}
+
+// replaceAPIURL replaces a github.com API URL with the HTML URL version.
+// GitHub Enterprise URLs are handled by previousAttemptHTMLURL via html_url.
+func replaceAPIURL(apiURL string) string {
 	return strings.Replace(apiURL, "api.github.com/repos", "github.com", 1)
 }
 
